@@ -1,0 +1,6 @@
+msvc-project/Release
+msvc-project/Debug
+msvc-project/sdl2stub/Release
+msvc-project/sdl2stub/Debug
+*.vcxproj.filters
+.vs
