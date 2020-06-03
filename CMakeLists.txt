@@ -12,7 +12,7 @@ else()
     find_package(SDL2 REQUIRED)
 endif()
 
-find_package(OPENGL REQUIRED)
+find_package(OpenGL REQUIRED)
 
 add_executable(${PROJECT_NAME} src/main.cpp)
 
