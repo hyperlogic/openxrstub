@@ -241,7 +241,7 @@ bool SupportsVR(XrInstance instance, XrSystemId systemId)
     return false;
 }
 
-bool EnumerateViews(XrInstance instance, XrSystemId systemId, std::vector<XrViewConfigurationView>* views)
+bool EnumerateViews(XrInstance instance, XrSystemId systemId, std::vector<XrViewConfigurationView>* viewConfigs)
 {
     XrResult result;
     uint32_t viewCount;
@@ -252,14 +252,14 @@ bool EnumerateViews(XrInstance instance, XrSystemId systemId, std::vector<XrView
         return false;
     }
 
-    views->resize(viewCount);
+    viewConfigs->resize(viewCount);
     for (uint32_t i = 0; i < viewCount; i++)
     {
-        (*views)[i].type = XR_TYPE_VIEW_CONFIGURATION_VIEW;
-        (*views)[i].next = NULL;
+        (*viewConfigs)[i].type = XR_TYPE_VIEW_CONFIGURATION_VIEW;
+        (*viewConfigs)[i].next = NULL;
     }
 
-    result = xrEnumerateViewConfigurationViews(instance, systemId, stereoViewConfigType, viewCount, &viewCount, views->data());
+    result = xrEnumerateViewConfigurationViews(instance, systemId, stereoViewConfigType, viewCount, &viewCount, viewConfigs->data());
     if (!CheckResult(instance, result, "xrEnumerateViewConfigurationViews"))
     {
         return false;
@@ -268,16 +268,16 @@ bool EnumerateViews(XrInstance instance, XrSystemId systemId, std::vector<XrView
     bool printViews = true;
     if (printViews)
     {
-        printf("views:\n");
+        printf("viewConfigs:\n");
         for (uint32_t i = 0; i < viewCount; i++)
         {
-            printf("    views[%d]:\n", i);
-            printf("        recommendedImageRectWidth: %d\n", (*views)[i].recommendedImageRectWidth);
-            printf("        maxImageRectWidth: %d\n", (*views)[i].maxImageRectWidth);
-            printf("        recommendedImageRectHeight: %d\n", (*views)[i].recommendedImageRectHeight);
-            printf("        maxImageRectHeight: %d\n", (*views)[i].maxImageRectHeight);
-            printf("        recommendedSwapchainSampleCount: %d\n", (*views)[i].recommendedSwapchainSampleCount);
-            printf("        maxSwapchainSampleCount: %d\n", (*views)[i].maxSwapchainSampleCount);
+            printf("    viewConfigs[%d]:\n", i);
+            printf("        recommendedImageRectWidth: %d\n", (*viewConfigs)[i].recommendedImageRectWidth);
+            printf("        maxImageRectWidth: %d\n", (*viewConfigs)[i].maxImageRectWidth);
+            printf("        recommendedImageRectHeight: %d\n", (*viewConfigs)[i].recommendedImageRectHeight);
+            printf("        maxImageRectHeight: %d\n", (*viewConfigs)[i].maxImageRectHeight);
+            printf("        recommendedSwapchainSampleCount: %d\n", (*viewConfigs)[i].recommendedSwapchainSampleCount);
+            printf("        maxSwapchainSampleCount: %d\n", (*viewConfigs)[i].maxSwapchainSampleCount);
         }
     }
 
@@ -402,6 +402,82 @@ bool BeginSession(XrInstance instance, XrSystemId systemId, XrSession session)
     return true;
 }
 
+bool CreateSwapchains(XrInstance instance, XrSystemId systemId, XrSession session,
+                      const std::vector<XrViewConfigurationView>& viewConfigs,
+                      std::vector<XrSwapchain>* swapchains,
+                      std::vector<std::vector<XrSwapchainImageOpenGLKHR>>* swapchainImages)
+{
+    XrResult result;
+    uint32_t swapchainFormatCount;
+    result = xrEnumerateSwapchainFormats(session, 0, &swapchainFormatCount, NULL);
+    if (!CheckResult(instance, result, "xrEnumerateSwapchainFormats"))
+    {
+        return false;
+    }
+
+    std::vector<int64_t> swapchainFormats(swapchainFormatCount);
+    result = xrEnumerateSwapchainFormats(session, swapchainFormatCount, &swapchainFormatCount, swapchainFormats.data());
+    if (!CheckResult(instance, result, "xrEnumerateSwapchainFormats"))
+    {
+        return false;
+    }
+
+    // TODO: pick a format.
+    int64_t swapchainFormatToUse = swapchainFormats[0];
+
+    std::vector<uint32_t> swapchainLengths(viewConfigs.size());
+
+    swapchains->resize(viewConfigs.size());
+
+    for (uint32_t i = 0; i < viewConfigs.size(); i++)
+    {
+        XrSwapchainCreateInfo sci;
+        sci.type = XR_TYPE_SWAPCHAIN_CREATE_INFO;
+        sci.next = NULL;
+        sci.createFlags = 0;
+        sci.usageFlags = XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+        sci.format = swapchainFormatToUse;
+        sci.sampleCount = 1;
+        sci.width = viewConfigs[i].recommendedImageRectWidth;
+        sci.height = viewConfigs[i].recommendedImageRectHeight;
+        sci.faceCount = 1;
+        sci.arraySize = 1;
+        sci.mipCount = 1;
+
+        result = xrCreateSwapchain(session, &sci, swapchains->data() + i);
+        if (!CheckResult(instance, result, "xrCreateSwapchain"))
+        {
+            return false;
+        }
+
+        result = xrEnumerateSwapchainImages((*swapchains)[i], 0, swapchainLengths.data() + i, NULL);
+        if (!CheckResult(instance, result, "xrEnumerateSwapchainImages"))
+        {
+            return false;
+        }
+    }
+
+    swapchainImages->resize(viewConfigs.size());
+    for (uint32_t i = 0; i < viewConfigs.size(); i++)
+    {
+        (*swapchainImages)[i].resize(swapchainLengths[i]);
+        for (uint32_t j = 0; j < swapchainLengths[i]; j++)
+        {
+            (*swapchainImages)[i][j].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR;
+            (*swapchainImages)[i][j].next = NULL;
+        }
+
+        result = xrEnumerateSwapchainImages((*swapchains)[i], swapchainLengths[i], &swapchainLengths[i],
+                                            (XrSwapchainImageBaseHeader*)((*swapchainImages)[i].data()));
+        if (!CheckResult(instance, result, "xrEnumerateSwapchainImages"))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 int main(int argc, char *argv[])
 {
     if (!GLSupport())
@@ -428,8 +504,8 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    std::vector<XrViewConfigurationView> views;
-    if (!EnumerateViews(instance, systemId, &views))
+    std::vector<XrViewConfigurationView> viewConfigs;
+    if (!EnumerateViews(instance, systemId, &viewConfigs))
     {
         return 1;
     }
@@ -470,6 +546,13 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    std::vector<XrSwapchain> swapchains;
+    std::vector<std::vector<XrSwapchainImageOpenGLKHR>> swapchainImages;
+    if (!CreateSwapchains(instance, systemId, session, viewConfigs, &swapchains, &swapchainImages))
+    {
+        return 1;
+    }
+
     while (!quitting)
     {
         SDL_Event event;
@@ -487,13 +570,18 @@ int main(int argc, char *argv[])
 
     SDL_DelEventWatch(watch, NULL);
     SDL_GL_DeleteContext(gl_context);
-    SDL_DestroyWindow(window);
-    SDL_Quit();
 
+    for (auto& swapchain : swapchains)
+    {
+        xrDestroySwapchain(swapchain);
+    }
     xrDestroySpace(stageSpace);
     xrEndSession(session);
     xrDestroySession(session);
     xrDestroyInstance(instance);
+
+    SDL_DestroyWindow(window);
+    SDL_Quit();
 
     return 0;
 }
