@@ -1,6 +1,5 @@
 // openxr example
 
-
 #define XR_USE_GRAPHICS_API_OPENGL
 #if defined(WIN32)
 #define XR_USE_PLATFORM_WIN32
@@ -16,7 +15,9 @@
 #include <openxr/openxr_platform.h>
 
 #include <vector>
+#include <array>
 
+#include <GL/glew.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_opengl.h>
 
@@ -28,10 +29,10 @@ static SDL_Window *window = NULL;
 static SDL_GLContext gl_context;
 static SDL_Renderer *renderer = NULL;
 
+bool printAll = true;
 
 void render()
 {
-    SDL_GL_MakeCurrent(window, gl_context);
     r = static_cast <float> (rand()) / static_cast <float> (RAND_MAX);
 
     glClearColor(r, 0.4f, 0.1f, 1.0f);
@@ -58,7 +59,7 @@ static bool CheckResult(XrInstance instance, XrResult result, const char* str)
         return true;
     }
 
-    if (instance)
+    if (instance != XR_NULL_HANDLE)
     {
         char resultString[XR_MAX_RESULT_STRING_SIZE];
         xrResultToString(instance, result, resultString);
@@ -71,7 +72,7 @@ static bool CheckResult(XrInstance instance, XrResult result, const char* str)
     return false;
 }
 
-bool GLSupport()
+bool SupportsGL()
 {
     XrResult result;
     uint32_t extensionCount = 0;
@@ -93,7 +94,7 @@ bool GLSupport()
     }
 
     bool printExtensions = false;
-    if (printExtensions)
+    if (printExtensions || printAll)
     {
         printf("extensions:\n");
     }
@@ -106,9 +107,9 @@ bool GLSupport()
             glSupported = true;
         }
 
-        if (printExtensions)
+        if (printExtensions || printAll)
         {
-            printf("extensions: %s\n", extensionProperties[i].extensionName);
+            printf("    %s\n", extensionProperties[i].extensionName);
         }
     }
     return glSupported;
@@ -140,7 +141,7 @@ bool CreateInstance(XrInstance* instance)
     }
 
     bool printRuntimeInfo = false;
-    if (printRuntimeInfo)
+    if (printRuntimeInfo || printAll)
     {
         XrInstanceProperties ip;
         ip.type = XR_TYPE_INSTANCE_PROPERTIES;
@@ -177,7 +178,7 @@ bool GetSystemId(XrInstance instance, XrSystemId* systemId)
     }
 
     bool printSystemProperties = false;
-    if (printSystemProperties)
+    if (printSystemProperties || printAll)
     {
         XrSystemProperties sp;
         sp.type = XR_TYPE_SYSTEM_PROPERTIES;
@@ -265,8 +266,8 @@ bool EnumerateViews(XrInstance instance, XrSystemId systemId, std::vector<XrView
         return false;
     }
 
-    bool printViews = true;
-    if (printViews)
+    bool printViews = false;
+    if (printViews || printAll)
     {
         printf("viewConfigs:\n");
         for (uint32_t i = 0; i < viewCount; i++)
@@ -326,11 +327,267 @@ bool CreateSession(XrInstance instance, XrSystemId systemId, XrSession* session)
     return true;
 }
 
+bool CreateActions(XrInstance instance, XrSystemId systemId, XrSession session, XrActionSet* actionSet)
+{
+    XrResult result;
+
+    // create action set
+    XrActionSetCreateInfo asci;
+    asci.type = XR_TYPE_ACTION_SET_CREATE_INFO;
+    asci.next = NULL;
+    strcpy_s(asci.actionSetName, "gameplay");
+    strcpy_s(asci.localizedActionSetName, "Gameplay");
+    asci.priority = 0;
+    result = xrCreateActionSet(instance, &asci, actionSet);
+    if (!CheckResult(instance, result, "xrCreateActionSet"))
+    {
+        return false;
+    }
+
+    std::array<XrPath, 2> handPath = {XR_NULL_PATH, XR_NULL_PATH};
+    xrStringToPath(instance, "/user/hand/left", handPath.data() + 0);
+    xrStringToPath(instance, "/user/hand/right", handPath.data() + 1);
+    if (!CheckResult(instance, result, "xrStringToPath"))
+    {
+        return false;
+    }
+
+    XrAction grabAction = XR_NULL_HANDLE;
+    XrActionCreateInfo aci;
+    aci.type = XR_TYPE_ACTION_CREATE_INFO;
+    aci.next = NULL;
+    aci.actionType = XR_ACTION_TYPE_FLOAT_INPUT;
+    strcpy_s(aci.actionName, "grab_object");
+    strcpy_s(aci.localizedActionName, "Grab Object");
+    aci.countSubactionPaths = 2;
+    aci.subactionPaths = handPath.data();
+    result = xrCreateAction(*actionSet, &aci, &grabAction);
+    if (!CheckResult(instance, result, "xrCreateAction"))
+    {
+        return false;
+    }
+
+    XrAction poseAction = XR_NULL_HANDLE;
+    aci.type = XR_TYPE_ACTION_CREATE_INFO;
+    aci.next = NULL;
+    aci.actionType = XR_ACTION_TYPE_POSE_INPUT;
+    strcpy_s(aci.actionName, "hand_pose");
+    strcpy_s(aci.localizedActionName, "Hand Pose");
+    aci.countSubactionPaths = 2;
+    aci.subactionPaths = handPath.data();
+    result = xrCreateAction(*actionSet, &aci, &poseAction);
+    if (!CheckResult(instance, result, "xrCreateAction"))
+    {
+        return false;
+    }
+
+    XrAction vibrateAction = XR_NULL_HANDLE;
+    aci.type = XR_TYPE_ACTION_CREATE_INFO;
+    aci.next = NULL;
+    aci.actionType = XR_ACTION_TYPE_VIBRATION_OUTPUT;
+    strcpy_s(aci.actionName, "vibrate_hand");
+    strcpy_s(aci.localizedActionName, "Vibrate Hand");
+    aci.countSubactionPaths = 2;
+    aci.subactionPaths = handPath.data();
+    result = xrCreateAction(*actionSet, &aci, &vibrateAction);
+    if (!CheckResult(instance, result, "xrCreateAction"))
+    {
+        return false;
+    }
+
+    XrAction quitAction = XR_NULL_HANDLE;
+    aci.type = XR_TYPE_ACTION_CREATE_INFO;
+    aci.next = NULL;
+    aci.actionType = XR_ACTION_TYPE_BOOLEAN_INPUT;
+    strcpy_s(aci.actionName, "quit_session");
+    strcpy_s(aci.localizedActionName, "Quit Session");
+    aci.countSubactionPaths = 2;
+    aci.subactionPaths = handPath.data();
+    result = xrCreateAction(*actionSet, &aci, &quitAction);
+    if (!CheckResult(instance, result, "xrCreateAction"))
+    {
+        return false;
+    }
+
+    std::array<XrPath, 2> selectPath = {XR_NULL_PATH, XR_NULL_PATH};
+    std::array<XrPath, 2> squeezeValuePath = {XR_NULL_PATH, XR_NULL_PATH};
+    std::array<XrPath, 2> squeezeClickPath = {XR_NULL_PATH, XR_NULL_PATH};
+    std::array<XrPath, 2> posePath = {XR_NULL_PATH, XR_NULL_PATH};
+    std::array<XrPath, 2> hapticPath = {XR_NULL_PATH, XR_NULL_PATH};
+    std::array<XrPath, 2> menuClickPath = {XR_NULL_PATH, XR_NULL_PATH};
+    xrStringToPath(instance, "/user/hand/left/input/select/click", selectPath.data() + 0);
+    xrStringToPath(instance, "/user/hand/right/input/select/click", selectPath.data() + 1);
+    xrStringToPath(instance, "/user/hand/left/input/squeeze/value", squeezeValuePath.data() + 0);
+    xrStringToPath(instance, "/user/hand/right/input/squeeze/value", squeezeValuePath.data() + 1);
+    xrStringToPath(instance, "/user/hand/left/input/squeeze/click", squeezeClickPath.data() + 0);
+    xrStringToPath(instance, "/user/hand/right/input/squeeze/click", squeezeClickPath.data() + 1);
+    xrStringToPath(instance, "/user/hand/left/input/grip/pose", posePath.data() + 0);
+    xrStringToPath(instance, "/user/hand/right/input/grip/pose", posePath.data() + 1);
+    xrStringToPath(instance, "/user/hand/left/output/haptic", hapticPath.data() + 0);
+    xrStringToPath(instance, "/user/hand/right/output/haptic", hapticPath.data() + 1);
+    xrStringToPath(instance, "/user/hand/left/input/menu/click", menuClickPath.data() + 0);
+    xrStringToPath(instance, "/user/hand/right/input/menu/click", menuClickPath.data() + 1);
+    if (!CheckResult(instance, result, "xrStringToPath"))
+    {
+        return false;
+    }
+
+    // KHR Simple
+    {
+        XrPath interactionProfilePath = XR_NULL_PATH;
+        xrStringToPath(instance, "/interaction_profiles/khr/simple_controller", &interactionProfilePath);
+        std::vector<XrActionSuggestedBinding> bindings = {
+            {grabAction, selectPath[0]},
+            {grabAction, selectPath[1]},
+            {poseAction, posePath[0]},
+            {poseAction, posePath[1]},
+            {quitAction, menuClickPath[0]},
+            {quitAction, menuClickPath[1]},
+            {vibrateAction, hapticPath[0]},
+            {vibrateAction, hapticPath[1]}
+        };
+
+        XrInteractionProfileSuggestedBinding suggestedBindings;
+        suggestedBindings.type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING;
+        suggestedBindings.next = NULL;
+        suggestedBindings.interactionProfile = interactionProfilePath;
+        suggestedBindings.suggestedBindings = bindings.data();
+        suggestedBindings.countSuggestedBindings = (uint32_t)bindings.size();
+        result = xrSuggestInteractionProfileBindings(instance, &suggestedBindings);
+        if (!CheckResult(instance, result, "xrSuggestInteractionProfileBindings"))
+        {
+            return false;
+        }
+    }
+
+    // oculus touch
+    {
+        XrPath interactionProfilePath = XR_NULL_PATH;
+        xrStringToPath(instance, "/interaction_profiles/oculus/touch_controller", &interactionProfilePath);
+        std::vector<XrActionSuggestedBinding> bindings = {
+            // AJT: WTF these result in errors
+            {grabAction, squeezeValuePath[0]},
+            {grabAction, squeezeValuePath[1]},
+            {poseAction, posePath[0]},
+            {poseAction, posePath[1]},
+            {quitAction, menuClickPath[0]},
+            //{quitAction, menuClickPath[1]},  // no menu button on right controller?
+            {vibrateAction, hapticPath[0]},
+            {vibrateAction, hapticPath[1]}
+        };
+
+        XrInteractionProfileSuggestedBinding suggestedBindings;
+        suggestedBindings.type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING;
+        suggestedBindings.next = NULL;
+        suggestedBindings.interactionProfile = interactionProfilePath;
+        suggestedBindings.suggestedBindings = bindings.data();
+        suggestedBindings.countSuggestedBindings = (uint32_t)bindings.size();
+        result = xrSuggestInteractionProfileBindings(instance, &suggestedBindings);
+        if (!CheckResult(instance, result, "xrSuggestInteractionProfileBindings (oculus)"))
+        {
+            return false;
+        }
+    }
+
+    // vive
+    {
+        XrPath interactionProfilePath = XR_NULL_PATH;
+        xrStringToPath(instance, "/interaction_profiles/htc/vive_controller", &interactionProfilePath);
+        std::vector<XrActionSuggestedBinding> bindings = {
+            {grabAction, squeezeClickPath[0]},
+            {grabAction, squeezeClickPath[1]},
+            {poseAction, posePath[0]},
+            {poseAction, posePath[1]},
+            {quitAction, menuClickPath[0]},
+            {quitAction, menuClickPath[1]},
+            {vibrateAction, hapticPath[0]},
+            {vibrateAction, hapticPath[1]}
+        };
+
+        XrInteractionProfileSuggestedBinding suggestedBindings;
+        suggestedBindings.type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING;
+        suggestedBindings.next = NULL;
+        suggestedBindings.interactionProfile = interactionProfilePath;
+        suggestedBindings.suggestedBindings = bindings.data();
+        suggestedBindings.countSuggestedBindings = (uint32_t)bindings.size();
+        result = xrSuggestInteractionProfileBindings(instance, &suggestedBindings);
+        if (!CheckResult(instance, result, "xrSuggestInteractionProfileBindings (vive)"))
+        {
+            return false;
+        }
+    }
+
+    // microsoft mixed reality
+    {
+        XrPath interactionProfilePath = XR_NULL_PATH;
+        xrStringToPath(instance, "/interaction_profiles/microsoft/motion_controller", &interactionProfilePath);
+        std::vector<XrActionSuggestedBinding> bindings = {
+            {grabAction, squeezeClickPath[0]},
+            {grabAction, squeezeClickPath[1]},
+            {poseAction, posePath[0]},
+            {poseAction, posePath[1]},
+            {quitAction, menuClickPath[0]},
+            {quitAction, menuClickPath[1]},
+            {vibrateAction, hapticPath[0]},
+            {vibrateAction, hapticPath[1]}
+        };
+
+        XrInteractionProfileSuggestedBinding suggestedBindings;
+        suggestedBindings.type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING;
+        suggestedBindings.next = NULL;
+        suggestedBindings.interactionProfile = interactionProfilePath;
+        suggestedBindings.suggestedBindings = bindings.data();
+        suggestedBindings.countSuggestedBindings = (uint32_t)bindings.size();
+        result = xrSuggestInteractionProfileBindings(instance, &suggestedBindings);
+        if (!CheckResult(instance, result, "xrSuggestInteractionProfileBindings"))
+        {
+            return false;
+        }
+    }
+
+    std::array<XrSpace, 2> handSpace = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+    XrActionSpaceCreateInfo aspci;
+    aspci.type = XR_TYPE_ACTION_SPACE_CREATE_INFO;
+    aspci.next = NULL;
+    aspci.action = poseAction;
+    XrPosef identity;
+    identity.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+    identity.position = {0.0f, 0.0f, 0.0f};
+    aspci.poseInActionSpace = identity;
+    aspci.subactionPath = handPath[0];
+    result = xrCreateActionSpace(session, &aspci, handSpace.data() + 0);
+    if (!CheckResult(instance, result, "xrCreateActionSpace"))
+    {
+        return false;
+    }
+
+    aspci.subactionPath = handPath[1];
+    result = xrCreateActionSpace(session, &aspci, handSpace.data() + 1);
+    if (!CheckResult(instance, result, "xrCreateActionSpace"))
+    {
+        return false;
+    }
+
+    XrSessionActionSetsAttachInfo sasai;
+    sasai.type = XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO;
+    sasai.next = NULL;
+    sasai.countActionSets = 1;
+    sasai.actionSets = actionSet;
+    result = xrAttachSessionActionSets(session, &sasai);
+    if (!CheckResult(instance, result, "xrSessionActionSetsAttachInfo"))
+    {
+        return false;
+    }
+
+    return true;
+}
+
 bool CreateStageSpace(XrInstance instance, XrSystemId systemId, XrSession session, XrSpace* stageSpace)
 {
     XrResult result;
     bool printReferenceSpaces = true;
-    if (printReferenceSpaces) {
+    if (printReferenceSpaces || printAll)
+    {
         uint32_t referenceSpacesCount;
         result = xrEnumerateReferenceSpaces(session, 0, &referenceSpacesCount, NULL);
         if (!CheckResult(instance, result, "xrEnumerateReferenceSpaces"))
@@ -378,23 +635,6 @@ bool CreateStageSpace(XrInstance instance, XrSystemId systemId, XrSession sessio
 
     result = xrCreateReferenceSpace(session, &rsci, stageSpace);
     if (!CheckResult(instance, result, "xrCreateReferenceSpace"))
-    {
-        return false;
-    }
-
-    return true;
-}
-
-bool BeginSession(XrInstance instance, XrSystemId systemId, XrSession session)
-{
-    XrResult result;
-    XrViewConfigurationType stereoViewConfigType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-    XrSessionBeginInfo sbi;
-    sbi.type = XR_TYPE_SESSION_BEGIN_INFO;
-    sbi.next = NULL;
-    sbi.primaryViewConfigurationType = stereoViewConfigType;
-    result = xrBeginSession(session, &sbi);
-    if (!CheckResult(instance, result, "xrBeginSession"))
     {
         return false;
     }
@@ -478,9 +718,55 @@ bool CreateSwapchains(XrInstance instance, XrSystemId systemId, XrSession sessio
     return true;
 }
 
+bool BeginSession(XrInstance instance, XrSystemId systemId, XrSession session)
+{
+    XrResult result;
+    XrViewConfigurationType stereoViewConfigType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+    XrSessionBeginInfo sbi;
+    sbi.type = XR_TYPE_SESSION_BEGIN_INFO;
+    sbi.next = NULL;
+    sbi.primaryViewConfigurationType = stereoViewConfigType;
+
+    result = xrBeginSession(session, &sbi);
+    if (!CheckResult(instance, result, "xrBeginSession"))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool CreateFrameBuffers(const std::vector<XrViewConfigurationView>& viewConfig, std::vector<GLuint>* frameBuffers, std::vector<GLuint>* depthBuffers)
+{
+    frameBuffers->resize(viewConfig.size(), 0);
+    depthBuffers->resize(viewConfig.size(), 0);
+    for (size_t i = 0; i < viewConfig.size(); i++)
+    {
+        glGenRenderbuffers(1, depthBuffers->data() + i);
+        glBindRenderbuffer(GL_RENDERBUFFER, (*depthBuffers)[i]);
+        uint32_t sampleCount = viewConfig[i].recommendedSwapchainSampleCount;
+        uint32_t width = viewConfig[i].recommendedImageRectWidth;
+        uint32_t height = viewConfig[i].recommendedImageRectHeight;
+        if (sampleCount == 1)
+        {
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
+        }
+        else
+        {
+            glRenderbufferStorageMultisample(GL_RENDERBUFFER, sampleCount, GL_DEPTH24_STENCIL8, width, height);
+        }
+        glGenFramebuffers(1, frameBuffers->data() + i);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (*frameBuffers)[i]);
+        glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, (*depthBuffers)[i]);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    }
+
+    return true;
+}
+
 int main(int argc, char *argv[])
 {
-    if (!GLSupport())
+    if (!SupportsGL())
     {
         printf("XR_KHR_OPENGL_ENABLE_EXTENSION not supported!\n");
         return 1;
@@ -527,6 +813,15 @@ int main(int argc, char *argv[])
         return -1;
     }
 
+    SDL_GL_MakeCurrent(window, gl_context);
+
+    GLenum err = glewInit();
+    if (GLEW_OK != err)
+    {
+        printf("glewInit failed: %s\n", glewGetErrorString(err));
+        return 1;
+    }
+
     SDL_AddEventWatch(watch, NULL);
 
     XrSession session;
@@ -535,13 +830,14 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    XrSpace stageSpace;
-    if (!CreateStageSpace(instance, systemId, session, &stageSpace))
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    if (!CreateActions(instance, systemId, session, &actionSet))
     {
         return 1;
     }
 
-    if (!BeginSession(instance, systemId, session))
+    XrSpace stageSpace;
+    if (!CreateStageSpace(instance, systemId, session, &stageSpace))
     {
         return 1;
     }
@@ -553,8 +849,94 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    std::vector<GLuint> frameBuffers;
+    std::vector<GLuint> depthBuffers;
+    if (!CreateFrameBuffers(viewConfigs, &frameBuffers, &depthBuffers))
+    {
+        return 1;
+    }
+
+    // AJT: TODO: setup actions and actionsets for input.
+
+    bool sessionReady = false;
+    XrSessionState xrState = XR_SESSION_STATE_UNKNOWN;
     while (!quitting)
     {
+        XrEventDataBuffer xrEvent;
+        xrEvent.type = XR_TYPE_EVENT_DATA_BUFFER;
+        xrEvent.next = NULL;
+
+        XrResult result = xrPollEvent(instance, &xrEvent);
+        if (result == XR_SUCCESS)
+        {
+            switch (xrEvent.type)
+            {
+            case XR_TYPE_EVENT_DATA_EVENTS_LOST:
+                printf("xrEvent: XR_TYPE_EVENT_DATA_EVENTS_LOST\n");
+                break;
+            case XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING:
+                printf("xrEvent: XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING\n");
+                break;
+            case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED:
+            {
+                printf("xrEvent: XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED -> ");
+                XrEventDataSessionStateChanged* ssc = (XrEventDataSessionStateChanged*)&xrEvent;
+                xrState = ssc->state;
+                switch (xrState)
+                {
+                case XR_SESSION_STATE_IDLE:
+                    printf("XR_SESSION_STATE_IDLE\n");
+                    break;
+                case XR_SESSION_STATE_READY:
+                    printf("XR_SESSION_STATE_READY\n");
+                    if (!BeginSession(instance, systemId, session))
+                    {
+                        return 1;
+                    }
+                    sessionReady = true;
+                    break;
+                case XR_SESSION_STATE_SYNCHRONIZED:
+                    printf("XR_SESSION_STATE_SYNCHRONIZED\n");
+                    break;
+                case XR_SESSION_STATE_VISIBLE:
+                    printf("XR_SESSION_STATE_VISIBLE\n");
+                    break;
+                case XR_SESSION_STATE_FOCUSED:
+                    printf("XR_SESSION_STATE_FOCUSED\n");
+                    break;
+                case XR_SESSION_STATE_STOPPING:
+                    printf("XR_SESSION_STATE_STOPPING\n");
+                    break;
+                case XR_SESSION_STATE_LOSS_PENDING:
+                    printf("XR_SESSION_STATE_LOSS_PENDING\n");
+                    break;
+                case XR_SESSION_STATE_EXITING:
+                    printf("XR_SESSION_STATE_EXITING\n");
+                    break;
+                default:
+                    printf("XR_SESSION_STATE_??? %d\n", (int)xrState);
+                    break;
+                }
+                break;
+            }
+            case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING:
+                printf("XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING\n");
+                break;
+            case XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED:
+                printf("XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED\n");
+                break;
+            case XR_TYPE_EVENT_DATA_VISIBILITY_MASK_CHANGED_KHR:
+                printf("XR_TYPE_EVENT_DATA_VISIBILITY_MASK_CHANGED_KHR\n");
+                break;
+            case XR_TYPE_EVENT_DATA_PERF_SETTINGS_EXT:
+                printf("XR_TYPE_EVENT_DATA_PERF_SETTINGS_EXT\n");
+                break;
+            default:
+                printf("Unhandled event type %d\n", xrEvent.type);
+                break;
+            }
+        }
+
         SDL_Event event;
         while (SDL_PollEvent(&event) )
         {
@@ -564,21 +946,121 @@ int main(int argc, char *argv[])
             }
         }
 
-        render();
-        SDL_Delay(2);
+        if (sessionReady)
+        {
+            static int frameNumber = 0;
+            printf("frame = %d\n", frameNumber);
+            frameNumber++;
+
+            // syncInput
+            XrActiveActionSet aas;
+            aas.actionSet = actionSet;
+            aas.subactionPath = XR_NULL_PATH;
+            XrActionsSyncInfo asi;
+            asi.type = XR_TYPE_ACTIONS_SYNC_INFO;
+            asi.next = NULL;
+            asi.countActiveActionSets = 1;
+            asi.activeActionSets = &aas;
+            result = xrSyncActions(session, &asi);
+            if (!CheckResult(instance, result, "xrSyncActions"))
+            {
+                return 1;
+            }
+            printf("after xrSyncActions\n");
+
+            // AJT: TODO xrGetActionStateFloat()
+            // xrGetActionStatePose()
+
+            XrFrameState fs;
+            fs.type = XR_TYPE_FRAME_STATE;
+            fs.next = NULL;
+
+            XrFrameWaitInfo fwi;
+            fwi.type = XR_TYPE_FRAME_WAIT_INFO;
+            fwi.next = NULL;
+
+            result = xrWaitFrame(session, &fwi, &fs);
+            if (!CheckResult(instance, result, "xrWaitFrame"))
+            {
+                return 1;
+            }
+
+            printf("after xrWaitFrame\n");
+
+            XrFrameBeginInfo fbi;
+            fbi.type = XR_TYPE_FRAME_BEGIN_INFO;
+            fbi.next = NULL;
+            result = xrBeginFrame(session, &fbi);
+            if (!CheckResult(instance, result, "xrBeginFrame"))
+            {
+                return 1;
+            }
+
+            printf("after xrBeginFrame\n");
+
+            // TODO: xrLocateViews
+            // for each view
+            // {
+            //    xrAquireSwapcahinImage
+            //    xrWaitSwapchainImage
+            //    render
+            //    xrReleaseSwapchainImage
+            // }
+
+            XrFrameEndInfo fei;
+            fei.type = XR_TYPE_FRAME_END_INFO;
+            fei.next = NULL;
+            fei.displayTime = fs.predictedDisplayTime;
+            fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+            fei.layerCount = 0;//(uint32_t)layers.size();
+            fei.layers = nullptr; //layers.data();
+            result = xrEndFrame(session, &fei);
+            if (!CheckResult(instance, result, "xrEndFrame"))
+            {
+                return 1;
+            }
+
+        }
+        else
+        {
+            SDL_Delay(100);
+        }
+
+        //render();
+        //SDL_Delay(2);
     }
 
     SDL_DelEventWatch(watch, NULL);
     SDL_GL_DeleteContext(gl_context);
 
+    for (auto& frameBuffer : frameBuffers)
+    {
+        glDeleteFramebuffers(1, &frameBuffer);
+    }
+
+    for (auto& depthBuffer : depthBuffers)
+    {
+        glDeleteRenderbuffers(1, &depthBuffer);
+    }
+
+    XrResult result;
     for (auto& swapchain : swapchains)
     {
-        xrDestroySwapchain(swapchain);
+        result = xrDestroySwapchain(swapchain);
+        CheckResult(instance, result, "xrDestroySwapchain");
     }
-    xrDestroySpace(stageSpace);
+
+    result = xrDestroySpace(stageSpace);
+    CheckResult(instance, result, "xrDestroySpace");
+
     xrEndSession(session);
+    CheckResult(instance, result, "xrEndSession");
+
     xrDestroySession(session);
+    CheckResult(instance, result, "xrDestroySession");
+
     xrDestroyInstance(instance);
+    CheckResult(XR_NULL_HANDLE, result, "xrDestroyInstance");
 
     SDL_DestroyWindow(window);
     SDL_Quit();
