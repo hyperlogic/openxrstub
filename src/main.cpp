@@ -16,6 +16,7 @@
 
 #include <vector>
 #include <array>
+#include <map>
 
 #include <GL/glew.h>
 #include <SDL2/SDL.h>
@@ -52,9 +53,9 @@ struct Context
     };
     std::vector<SwapchainInfo> swapchains;
     std::vector<std::vector<XrSwapchainImageOpenGLKHR>> swapchainImages;
+    std::map<GLuint, GLuint> colorToDepthMap;
 
-    std::vector<GLuint> frameBuffers;
-    std::vector<GLuint> depthBuffers;
+    GLuint frameBuffer;
 };
 
 void render()
@@ -803,32 +804,9 @@ bool BeginSession(XrInstance instance, XrSystemId systemId, XrSession session)
     return true;
 }
 
-bool CreateFrameBuffers(const std::vector<XrViewConfigurationView>& viewConfig,
-                        std::vector<GLuint>& frameBuffers, std::vector<GLuint>& depthBuffers)
+bool CreateFrameBuffer(GLuint& frameBuffer)
 {
-    frameBuffers.resize(viewConfig.size(), 0);
-    depthBuffers.resize(viewConfig.size(), 0);
-    for (size_t i = 0; i < viewConfig.size(); i++)
-    {
-        glGenRenderbuffers(1, depthBuffers.data() + i);
-        glBindRenderbuffer(GL_RENDERBUFFER, depthBuffers[i]);
-        uint32_t sampleCount = viewConfig[i].recommendedSwapchainSampleCount;
-        uint32_t width = viewConfig[i].recommendedImageRectWidth;
-        uint32_t height = viewConfig[i].recommendedImageRectHeight;
-        if (sampleCount == 1)
-        {
-            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
-        }
-        else
-        {
-            glRenderbufferStorageMultisample(GL_RENDERBUFFER, sampleCount, GL_DEPTH24_STENCIL8, width, height);
-        }
-        glGenFramebuffers(1, frameBuffers.data() + i);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffers[i]);
-        glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, depthBuffers[i]);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    }
-
+    glGenFramebuffers(1, &frameBuffer);
     return true;
 }
 
@@ -859,7 +837,7 @@ bool SyncInput(Context& context)
 
 bool RenderView(const XrCompositionLayerProjectionView& layerView,
                 const XrSwapchainImageOpenGLKHR& swapchainImage,
-                GLuint frameBuffer, GLuint depthBuffer)
+                GLuint frameBuffer, GLuint colorTexture, GLuint depthTexture)
 {
     glBindFramebuffer(GL_FRAMEBUFFER, frameBuffer);
     glViewport(static_cast<GLint>(layerView.subImage.imageRect.offset.x),
@@ -867,9 +845,8 @@ bool RenderView(const XrCompositionLayerProjectionView& layerView,
                static_cast<GLsizei>(layerView.subImage.imageRect.extent.width),
                static_cast<GLsizei>(layerView.subImage.imageRect.extent.height));
 
-    const uint32_t colorTexture = swapchainImage.image;
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, colorTexture, 0);
-    //glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthBuffer, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthTexture, 0);
 
     glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
     glClearDepth(1.0f);
@@ -880,6 +857,24 @@ bool RenderView(const XrCompositionLayerProjectionView& layerView,
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     return true;
+}
+
+GLuint CreateDepthTexture(GLuint colorTexture)
+{
+    GLint width, height;
+    glBindTexture(GL_TEXTURE_2D, colorTexture);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &width);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &height);
+
+    uint32_t depthTexture;
+    glGenTextures(1, &depthTexture);
+    glBindTexture(GL_TEXTURE_2D, depthTexture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    return depthTexture;
 }
 
 bool RenderLayer(Context& context, XrTime predictedDisplayTime,
@@ -954,7 +949,17 @@ bool RenderLayer(Context& context, XrTime predictedDisplayTime,
             projectionLayerViews[i].subImage.imageRect.extent = {viewSwapchain.width, viewSwapchain.height};
 
             const XrSwapchainImageOpenGLKHR& swapchainImage = context.swapchainImages[i][swapchainImageIndex];
-            RenderView(projectionLayerViews[i], swapchainImage, context.frameBuffers[i], context.depthBuffers[i]);
+
+            // find or create the depthTexture associated with this colorTexture
+            const uint32_t colorTexture = swapchainImage.image;
+            auto iter = context.colorToDepthMap.find(colorTexture);
+            if (iter == context.colorToDepthMap.end())
+            {
+                const uint32_t depthTexture = CreateDepthTexture(colorTexture);
+                iter = context.colorToDepthMap.insert(std::make_pair(colorTexture, depthTexture)).first;
+            }
+
+            RenderView(projectionLayerViews[i], swapchainImage, context.frameBuffer, iter->first, iter->second);
 
             XrSwapchainImageReleaseInfo ri;
             ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
@@ -1121,7 +1126,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if (!CreateFrameBuffers(context.viewConfigs, context.frameBuffers, context.depthBuffers))
+    if (!CreateFrameBuffer(context.frameBuffer))
     {
         return 1;
     }
@@ -1251,15 +1256,7 @@ int main(int argc, char *argv[])
     SDL_DelEventWatch(watch, NULL);
     SDL_GL_DeleteContext(gl_context);
 
-    for (auto& frameBuffer : context.frameBuffers)
-    {
-        glDeleteFramebuffers(1, &frameBuffer);
-    }
-
-    for (auto& depthBuffer : context.depthBuffers)
-    {
-        glDeleteRenderbuffers(1, &depthBuffer);
-    }
+    glDeleteFramebuffers(1, &context.frameBuffer);
 
     XrResult result;
     for (auto& swapchain : context.swapchains)
