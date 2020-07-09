@@ -350,7 +350,8 @@ bool EnumerateViewConfigs(XrInstance instance, XrSystemId systemId, std::vector<
 bool CreateSession(XrInstance instance, XrSystemId systemId, XrSession& session)
 {
     XrResult result;
-    // TODO: check if opengl version is sufficient.
+
+    // check if opengl version is sufficient.
     {
         XrGraphicsRequirementsOpenGLKHR reqs;
         reqs.type = XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_KHR;
@@ -365,6 +366,27 @@ bool CreateSession(XrInstance instance, XrSystemId systemId, XrSession& session)
         result = pfnGetOpenGLGraphicsRequirementsKHR(instance, systemId, &reqs);
         if (!CheckResult(instance, result, "GetOpenGLGraphicsRequirementsPKR"))
         {
+            return false;
+        }
+
+        GLint major = 0;
+        GLint minor = 0;
+        glGetIntegerv(GL_MAJOR_VERSION, &major);
+        glGetIntegerv(GL_MINOR_VERSION, &minor);
+        const XrVersion desiredApiVersion = XR_MAKE_VERSION(major, minor, 0);
+
+        bool printVersion = false;
+        if (printVersion || printAll)
+        {
+            printf("current OpenGL version: %d.%d.%d\n", XR_VERSION_MAJOR(desiredApiVersion),
+                   XR_VERSION_MINOR(desiredApiVersion), XR_VERSION_PATCH(desiredApiVersion));
+            printf("minimum OpenGL version: %d.%d.%d\n", XR_VERSION_MAJOR(reqs.minApiVersionSupported),
+                   XR_VERSION_MINOR(reqs.minApiVersionSupported), XR_VERSION_PATCH(reqs.minApiVersionSupported));
+        }
+
+        if (reqs.minApiVersionSupported > desiredApiVersion)
+        {
+            printf("Runtime does not support desired Graphics API and/or version\n");
             return false;
         }
     }
@@ -527,12 +549,7 @@ bool CreateActions(XrInstance instance, XrSystemId systemId, XrSession session, 
         XrPath interactionProfilePath = XR_NULL_PATH;
         xrStringToPath(instance, "/interaction_profiles/oculus/touch_controller", &interactionProfilePath);
         std::vector<XrActionSuggestedBinding> bindings = {
-            // AJT: WTF these result in errors
             {grabAction, squeezeValuePath[0]},
-
-
-
-
             {grabAction, squeezeValuePath[1]},
             {poseAction, posePath[0]},
             {poseAction, posePath[1]},
@@ -829,8 +846,8 @@ bool SyncInput(Context& context)
         return false;
     }
 
-    // AJT: TODO xrGetActionStateFloat()
-    // xrGetActionStatePose()
+    // AJT: TODO: xrGetActionStateFloat()
+    // AJT: TODO: xrGetActionStatePose()
 
     return true;
 }
