@@ -54,7 +54,6 @@ struct Context
     std::vector<SwapchainInfo> swapchains;
     std::vector<std::vector<XrSwapchainImageOpenGLKHR>> swapchainImages;
     std::map<GLuint, GLuint> colorToDepthMap;
-
     GLuint frameBuffer;
 };
 
@@ -725,19 +724,22 @@ bool CreateStageSpace(XrInstance instance, XrSystemId systemId, XrSession sessio
     return true;
 }
 
-bool CreateSwapchains(Context& context)
+bool CreateSwapchains(XrInstance instance, XrSession session,
+                      const std::vector<XrViewConfigurationView>& viewConfigs,
+                      std::vector<Context::SwapchainInfo>& swapchains,
+                      std::vector<std::vector<XrSwapchainImageOpenGLKHR>>& swapchainImages)
 {
     XrResult result;
     uint32_t swapchainFormatCount;
-    result = xrEnumerateSwapchainFormats(context.session, 0, &swapchainFormatCount, NULL);
-    if (!CheckResult(context.instance, result, "xrEnumerateSwapchainFormats"))
+    result = xrEnumerateSwapchainFormats(session, 0, &swapchainFormatCount, NULL);
+    if (!CheckResult(instance, result, "xrEnumerateSwapchainFormats"))
     {
         return false;
     }
 
     std::vector<int64_t> swapchainFormats(swapchainFormatCount);
-    result = xrEnumerateSwapchainFormats(context.session, swapchainFormatCount, &swapchainFormatCount, swapchainFormats.data());
-    if (!CheckResult(context.instance, result, "xrEnumerateSwapchainFormats"))
+    result = xrEnumerateSwapchainFormats(session, swapchainFormatCount, &swapchainFormatCount, swapchainFormats.data());
+    if (!CheckResult(instance, result, "xrEnumerateSwapchainFormats"))
     {
         return false;
     }
@@ -745,11 +747,11 @@ bool CreateSwapchains(Context& context)
     // TODO: pick a format.
     int64_t swapchainFormatToUse = swapchainFormats[0];
 
-    std::vector<uint32_t> swapchainLengths(context.viewConfigs.size());
+    std::vector<uint32_t> swapchainLengths(viewConfigs.size());
 
-    context.swapchains.resize(context.viewConfigs.size());
+    swapchains.resize(viewConfigs.size());
 
-    for (uint32_t i = 0; i < context.viewConfigs.size(); i++)
+    for (uint32_t i = 0; i < viewConfigs.size(); i++)
     {
         XrSwapchainCreateInfo sci;
         sci.type = XR_TYPE_SWAPCHAIN_CREATE_INFO;
@@ -758,43 +760,43 @@ bool CreateSwapchains(Context& context)
         sci.usageFlags = XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
         sci.format = swapchainFormatToUse;
         sci.sampleCount = 1;
-        sci.width = context.viewConfigs[i].recommendedImageRectWidth;
-        sci.height = context.viewConfigs[i].recommendedImageRectHeight;
+        sci.width = viewConfigs[i].recommendedImageRectWidth;
+        sci.height = viewConfigs[i].recommendedImageRectHeight;
         sci.faceCount = 1;
         sci.arraySize = 1;
         sci.mipCount = 1;
 
         XrSwapchain swapchainHandle;
-        result = xrCreateSwapchain(context.session, &sci, &swapchainHandle);
-        if (!CheckResult(context.instance, result, "xrCreateSwapchain"))
+        result = xrCreateSwapchain(session, &sci, &swapchainHandle);
+        if (!CheckResult(instance, result, "xrCreateSwapchain"))
         {
             return false;
         }
 
-        context.swapchains[i].handle = swapchainHandle;
-        context.swapchains[i].width = sci.width;
-        context.swapchains[i].height = sci.height;
+        swapchains[i].handle = swapchainHandle;
+        swapchains[i].width = sci.width;
+        swapchains[i].height = sci.height;
 
-        result = xrEnumerateSwapchainImages(context.swapchains[i].handle, 0, swapchainLengths.data() + i, NULL);
-        if (!CheckResult(context.instance, result, "xrEnumerateSwapchainImages"))
+        result = xrEnumerateSwapchainImages(swapchains[i].handle, 0, swapchainLengths.data() + i, NULL);
+        if (!CheckResult(instance, result, "xrEnumerateSwapchainImages"))
         {
             return false;
         }
     }
 
-    context.swapchainImages.resize(context.viewConfigs.size());
-    for (uint32_t i = 0; i < context.viewConfigs.size(); i++)
+    swapchainImages.resize(viewConfigs.size());
+    for (uint32_t i = 0; i < viewConfigs.size(); i++)
     {
-        context.swapchainImages[i].resize(swapchainLengths[i]);
+        swapchainImages[i].resize(swapchainLengths[i]);
         for (uint32_t j = 0; j < swapchainLengths[i]; j++)
         {
-            context.swapchainImages[i][j].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR;
-            context.swapchainImages[i][j].next = NULL;
+            swapchainImages[i][j].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR;
+            swapchainImages[i][j].next = NULL;
         }
 
-        result = xrEnumerateSwapchainImages(context.swapchains[i].handle, swapchainLengths[i], &swapchainLengths[i],
-                                            (XrSwapchainImageBaseHeader*)(context.swapchainImages[i].data()));
-        if (!CheckResult(context.instance, result, "xrEnumerateSwapchainImages"))
+        result = xrEnumerateSwapchainImages(swapchains[i].handle, swapchainLengths[i], &swapchainLengths[i],
+                                            (XrSwapchainImageBaseHeader*)(swapchainImages[i].data()));
+        if (!CheckResult(instance, result, "xrEnumerateSwapchainImages"))
         {
             return false;
         }
@@ -853,7 +855,6 @@ bool SyncInput(Context& context)
 }
 
 bool RenderView(const XrCompositionLayerProjectionView& layerView,
-                const XrSwapchainImageOpenGLKHR& swapchainImage,
                 GLuint frameBuffer, GLuint colorTexture, GLuint depthTexture)
 {
     glBindFramebuffer(GL_FRAMEBUFFER, frameBuffer);
@@ -976,7 +977,7 @@ bool RenderLayer(Context& context, XrTime predictedDisplayTime,
                 iter = context.colorToDepthMap.insert(std::make_pair(colorTexture, depthTexture)).first;
             }
 
-            RenderView(projectionLayerViews[i], swapchainImage, context.frameBuffer, iter->first, iter->second);
+            RenderView(projectionLayerViews[i], context.frameBuffer, iter->first, iter->second);
 
             XrSwapchainImageReleaseInfo ri;
             ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
@@ -1138,12 +1139,13 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if (!CreateSwapchains(context))
+    if (!CreateFrameBuffer(context.frameBuffer))
     {
         return 1;
     }
 
-    if (!CreateFrameBuffer(context.frameBuffer))
+    if (!CreateSwapchains(context.instance, context.session, context.viewConfigs,
+                          context.swapchains, context.swapchainImages))
     {
         return 1;
     }
@@ -1285,13 +1287,13 @@ int main(int argc, char *argv[])
     result = xrDestroySpace(context.stageSpace);
     CheckResult(context.instance, result, "xrDestroySpace");
 
-    xrEndSession(context.session);
+    result = xrEndSession(context.session);
     CheckResult(context.instance, result, "xrEndSession");
 
-    xrDestroySession(context.session);
+    result = xrDestroySession(context.session);
     CheckResult(context.instance, result, "xrDestroySession");
 
-    xrDestroyInstance(context.instance);
+    result = xrDestroyInstance(context.instance);
     CheckResult(XR_NULL_HANDLE, result, "xrDestroyInstance");
 
     SDL_DestroyWindow(window);
