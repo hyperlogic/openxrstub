@@ -1121,7 +1121,7 @@ bool RenderView(const Context::ProgramInfo& programInfo, const XrCompositionLaye
     float radius = 1.5f;
     float portalRadius = radius / 3.0f;
     const int NUM_VERTICES = 54;
-    float positions[NUM_VERTICES * 3] = {
+    static float positions[NUM_VERTICES * 3] = {
         // room bounds
         radius, 0.0f, radius,
         radius, 0.0f, -radius,
@@ -1203,7 +1203,7 @@ bool RenderView(const Context::ProgramInfo& programInfo, const XrCompositionLaye
     glEnableVertexAttribArray(programInfo.positionAttribLoc);
 
     const int NUM_INDICES = 104;
-    uint16_t indices[NUM_INDICES] = {
+    static uint16_t indices[NUM_INDICES] = {
         0, 1, 1, 2, 2, 3, 3, 0,  // room
         0, 4, 1, 5, 2, 6, 3, 7,
         4, 5, 5, 6, 6, 7, 7, 4,
