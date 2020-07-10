@@ -55,6 +55,15 @@ struct Context
     std::vector<std::vector<XrSwapchainImageOpenGLKHR>> swapchainImages;
     std::map<GLuint, GLuint> colorToDepthMap;
     GLuint frameBuffer;
+
+    struct ProgramInfo
+    {
+        GLint program = 0;
+        GLint modelViewProjMatUniformLoc = 0;
+        GLint colorUniformLoc = 0;
+        GLint positionAttribLoc = 0;
+    };
+    ProgramInfo programInfo;
 };
 
 void render()
@@ -829,21 +838,90 @@ bool CreateFrameBuffer(GLuint& frameBuffer)
     return true;
 }
 
-bool SyncInput(Context& context)
+bool CompileShader(GLint& shader, GLenum type, const char* source)
+{
+    shader = glCreateShader(type);
+    int size = (int)strlen(source);
+    glShaderSource(shader, 1, (const GLchar**)&source, &size);
+    glCompileShader(shader);
+
+    GLint compiled;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    return (bool)compiled;
+}
+
+bool CompileProgram(Context::ProgramInfo& programInfo)
+{
+    static const char* vertSource = R"_(
+uniform mat4 modelViewProjMat;
+attribute vec3 position;
+
+void main(void)
+{
+    gl_Position = modelViewProjMat * vec4(position, 1);
+}
+)_";
+
+    static const char* fragSource = R"_(
+uniform vec4 color;
+void main()
+{
+    gl_FragColor = color;
+}
+)_";
+
+    GLint vertShader = 0;
+    GLint fragShader = 0;
+
+    if (!CompileShader(vertShader, GL_VERTEX_SHADER, vertSource))
+    {
+        printf("Failed to compile vertex shader\n");
+        return false;
+    }
+
+    if (!CompileShader(fragShader, GL_FRAGMENT_SHADER, fragSource))
+    {
+        printf("Failed to compile fragment shader\n");
+        return false;
+    }
+
+    programInfo.program = glCreateProgram();
+    glAttachShader(programInfo.program, vertShader);
+    glAttachShader(programInfo.program, fragShader);
+    glLinkProgram(programInfo.program);
+
+    glDeleteShader(vertShader);
+    glDeleteShader(fragShader);
+
+    GLint linked;
+    glGetProgramiv(programInfo.program, GL_LINK_STATUS, &linked);
+    if (!linked)
+    {
+        return false;
+    }
+
+    programInfo.modelViewProjMatUniformLoc = glGetUniformLocation(programInfo.program, "modelViewProjMat");
+    programInfo.colorUniformLoc = glGetUniformLocation(programInfo.program, "color");
+    programInfo.positionAttribLoc = glGetAttribLocation(programInfo.program, "position");
+
+    return true;
+}
+
+bool SyncInput(XrInstance instance, XrSession session, XrActionSet actionSet)
 {
     XrResult result;
 
     // syncInput
     XrActiveActionSet aas;
-    aas.actionSet = context.actionSet;
+    aas.actionSet = actionSet;
     aas.subactionPath = XR_NULL_PATH;
     XrActionsSyncInfo asi;
     asi.type = XR_TYPE_ACTIONS_SYNC_INFO;
     asi.next = NULL;
     asi.countActiveActionSets = 1;
     asi.activeActionSets = &aas;
-    result = xrSyncActions(context.session, &asi);
-    if (!CheckResult(context.instance, result, "xrSyncActions"))
+    result = xrSyncActions(session, &asi);
+    if (!CheckResult(instance, result, "xrSyncActions"))
     {
         return false;
     }
@@ -854,7 +932,151 @@ bool SyncInput(Context& context)
     return true;
 }
 
-bool RenderView(const XrCompositionLayerProjectionView& layerView,
+static void InitPoseMat(float* result, const XrPosef& pose)
+{
+    const float x2 = pose.orientation.x + pose.orientation.x;
+    const float y2 = pose.orientation.y + pose.orientation.y;
+    const float z2 = pose.orientation.z + pose.orientation.z;
+
+    const float xx2 = pose.orientation.x * x2;
+    const float yy2 = pose.orientation.y * y2;
+    const float zz2 = pose.orientation.z * z2;
+
+    const float yz2 = pose.orientation.y * z2;
+    const float wx2 = pose.orientation.w * x2;
+    const float xy2 = pose.orientation.x * y2;
+    const float wz2 = pose.orientation.w * z2;
+    const float xz2 = pose.orientation.x * z2;
+    const float wy2 = pose.orientation.w * y2;
+
+    result[0] = 1.0f - yy2 - zz2;
+    result[1] = xy2 + wz2;
+    result[2] = xz2 - wy2;
+    result[3] = 0.0f;
+
+    result[4] = xy2 - wz2;
+    result[5] = 1.0f - xx2 - zz2;
+    result[6] = yz2 + wx2;
+    result[7] = 0.0f;
+
+    result[8] = xz2 + wy2;
+    result[9] = yz2 - wx2;
+    result[10] = 1.0f - xx2 - yy2;
+    result[11] = 0.0f;
+
+    result[12] = pose.position.x;
+    result[13] = pose.position.y;
+    result[14] = pose.position.z;
+    result[15] = 1.0;
+}
+
+static void MultiplyMat(float* result, const float* a, const float* b)
+{
+    result[0] = a[0] * b[0] + a[4] * b[1] + a[8] * b[2] + a[12] * b[3];
+    result[1] = a[1] * b[0] + a[5] * b[1] + a[9] * b[2] + a[13] * b[3];
+    result[2] = a[2] * b[0] + a[6] * b[1] + a[10] * b[2] + a[14] * b[3];
+    result[3] = a[3] * b[0] + a[7] * b[1] + a[11] * b[2] + a[15] * b[3];
+
+    result[4] = a[0] * b[4] + a[4] * b[5] + a[8] * b[6] + a[12] * b[7];
+    result[5] = a[1] * b[4] + a[5] * b[5] + a[9] * b[6] + a[13] * b[7];
+    result[6] = a[2] * b[4] + a[6] * b[5] + a[10] * b[6] + a[14] * b[7];
+    result[7] = a[3] * b[4] + a[7] * b[5] + a[11] * b[6] + a[15] * b[7];
+
+    result[8] = a[0] * b[8] + a[4] * b[9] + a[8] * b[10] + a[12] * b[11];
+    result[9] = a[1] * b[8] + a[5] * b[9] + a[9] * b[10] + a[13] * b[11];
+    result[10] = a[2] * b[8] + a[6] * b[9] + a[10] * b[10] + a[14] * b[11];
+    result[11] = a[3] * b[8] + a[7] * b[9] + a[11] * b[10] + a[15] * b[11];
+
+    result[12] = a[0] * b[12] + a[4] * b[13] + a[8] * b[14] + a[12] * b[15];
+    result[13] = a[1] * b[12] + a[5] * b[13] + a[9] * b[14] + a[13] * b[15];
+    result[14] = a[2] * b[12] + a[6] * b[13] + a[10] * b[14] + a[14] * b[15];
+    result[15] = a[3] * b[12] + a[7] * b[13] + a[11] * b[14] + a[15] * b[15];
+}
+
+static void InvertOrthogonalMat(float* result, float* src)
+{
+    result[0] = src[0];
+    result[1] = src[4];
+    result[2] = src[8];
+    result[3] = 0.0f;
+    result[4] = src[1];
+    result[5] = src[5];
+    result[6] = src[9];
+    result[7] = 0.0f;
+    result[8] = src[2];
+    result[9] = src[6];
+    result[10] = src[10];
+    result[11] = 0.0f;
+    result[12] = -(src[0] * src[12] + src[1] * src[13] + src[2] * src[14]);
+    result[13] = -(src[4] * src[12] + src[5] * src[13] + src[6] * src[14]);
+    result[14] = -(src[8] * src[12] + src[9] * src[13] + src[10] * src[14]);
+    result[15] = 1.0f;
+}
+
+enum GraphicsAPI { GRAPHICS_VULKAN, GRAPHICS_OPENGL, GRAPHICS_OPENGL_ES, GRAPHICS_D3D };
+static void InitProjectionMat(float* result, GraphicsAPI graphicsApi, const float tanAngleLeft,
+                              const float tanAngleRight, const float tanAngleUp, float const tanAngleDown,
+                              const float nearZ, const float farZ)
+{
+    const float tanAngleWidth = tanAngleRight - tanAngleLeft;
+
+    // Set to tanAngleDown - tanAngleUp for a clip space with positive Y down (Vulkan).
+    // Set to tanAngleUp - tanAngleDown for a clip space with positive Y up (OpenGL / D3D / Metal).
+    const float tanAngleHeight = graphicsApi == GRAPHICS_VULKAN ? (tanAngleDown - tanAngleUp) : (tanAngleUp - tanAngleDown);
+
+    // Set to nearZ for a [-1,1] Z clip space (OpenGL / OpenGL ES).
+    // Set to zero for a [0,1] Z clip space (Vulkan / D3D / Metal).
+    const float offsetZ = (graphicsApi == GRAPHICS_OPENGL || graphicsApi == GRAPHICS_OPENGL_ES) ? nearZ : 0;
+
+    if (farZ <= nearZ)
+    {
+        // place the far plane at infinity
+        result[0] = 2 / tanAngleWidth;
+        result[4] = 0;
+        result[8] = (tanAngleRight + tanAngleLeft) / tanAngleWidth;
+        result[12] = 0;
+
+        result[1] = 0;
+        result[5] = 2 / tanAngleHeight;
+        result[9] = (tanAngleUp + tanAngleDown) / tanAngleHeight;
+        result[13] = 0;
+
+        result[2] = 0;
+        result[6] = 0;
+        result[10] = -1;
+        result[14] = -(nearZ + offsetZ);
+
+        result[3] = 0;
+        result[7] = 0;
+        result[11] = -1;
+        result[15] = 0;
+    }
+    else
+    {
+        // normal projection
+        result[0] = 2 / tanAngleWidth;
+        result[4] = 0;
+        result[8] = (tanAngleRight + tanAngleLeft) / tanAngleWidth;
+        result[12] = 0;
+
+        result[1] = 0;
+        result[5] = 2 / tanAngleHeight;
+        result[9] = (tanAngleUp + tanAngleDown) / tanAngleHeight;
+        result[13] = 0;
+
+        result[2] = 0;
+        result[6] = 0;
+        result[10] = -(farZ + offsetZ) / (farZ - nearZ);
+        result[14] = -(farZ * (nearZ + offsetZ)) / (farZ - nearZ);
+
+        result[3] = 0;
+        result[7] = 0;
+        result[11] = -1;
+        result[15] = 0;
+    }
+}
+
+bool RenderView(const Context::ProgramInfo& programInfo, const XrCompositionLayerProjectionView& layerView,
                 GLuint frameBuffer, GLuint colorTexture, GLuint depthTexture)
 {
     glBindFramebuffer(GL_FRAMEBUFFER, frameBuffer);
@@ -866,11 +1088,137 @@ bool RenderView(const XrCompositionLayerProjectionView& layerView,
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, colorTexture, 0);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthTexture, 0);
 
-    glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClearDepth(1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
-    // render shit
+    // convert XrFovf into an OpenGL projection matrix.
+    const float tanLeft = tanf(layerView.fov.angleLeft);
+    const float tanRight = tanf(layerView.fov.angleRight);
+    const float tanDown = tanf(layerView.fov.angleDown);
+    const float tanUp = tanf(layerView.fov.angleUp);
+    const float nearZ = 0.05f;
+    const float farZ = 100.0f;
+    float projMat[16];
+    InitProjectionMat(projMat, GRAPHICS_OPENGL, tanLeft, tanRight, tanUp, tanDown, nearZ, farZ);
+
+    // compute view matrix by inverting the pose
+    float invViewMat[16];
+    InitPoseMat(invViewMat, layerView.pose);
+    float viewMat[16];
+    InvertOrthogonalMat(viewMat, invViewMat);
+
+    float modelViewProjMat[16];
+    MultiplyMat(modelViewProjMat, projMat, viewMat);
+
+    glUseProgram(programInfo.program);
+    glUniformMatrix4fv(programInfo.modelViewProjMatUniformLoc, 1, GL_FALSE, modelViewProjMat);
+    float green[4] = {0.0f, 1.0f, 0.0f, 1.0f};
+    glUniform4fv(programInfo.colorUniformLoc, 1, green);
+
+    // Original 1968 "Sword of Damocles" Room
+    // https://youtu.be/LZCx0yH9gLM?t=4711
+    float radius = 1.5f;
+    float portalRadius = radius / 3.0f;
+    const int NUM_VERTICES = 54;
+    float positions[NUM_VERTICES * 3] = {
+        // room bounds
+        radius, 0.0f, radius,
+        radius, 0.0f, -radius,
+        -radius, 0.0f, -radius,
+        -radius, 0.0f, radius,
+
+        radius, 2.0f * radius, radius,
+        radius, 2.0f * radius, -radius,
+        -radius, 2.0f * radius, -radius,
+        -radius, 2.0f * radius, radius,
+
+        // north protal
+        portalRadius, radius + portalRadius, -radius,
+        -portalRadius, radius + portalRadius, -radius,
+        -portalRadius, radius - portalRadius, -radius,
+        portalRadius, radius - portalRadius, -radius,
+
+        // south protal
+        portalRadius, radius + portalRadius, radius,
+        -portalRadius, radius + portalRadius, radius,
+        -portalRadius, radius - portalRadius, radius,
+        portalRadius, radius - portalRadius, radius,
+
+        // east portal
+        radius, radius + portalRadius, portalRadius,
+        radius, radius + portalRadius, -portalRadius,
+        radius, radius - portalRadius, -portalRadius,
+        radius, radius - portalRadius, portalRadius,
+
+        // west door
+        -radius, radius + portalRadius, portalRadius,
+        -radius, radius + portalRadius, -portalRadius,
+        -radius, 0.0f, -portalRadius,
+        -radius, 0.0f, portalRadius,
+
+        // letter n
+        portalRadius / 4.0f, radius + (portalRadius / 2.0f), -radius * 0.9f,
+        -portalRadius / 4.0f, radius + (portalRadius / 2.0f), -radius * 0.9f,
+        -portalRadius / 4.0f, radius - (portalRadius / 2.0f), -radius * 0.9f,
+        portalRadius / 4.0f, radius - (portalRadius / 2.0f), -radius * 0.9f,
+
+        // letter s
+        -portalRadius / 4.0f, radius + (portalRadius / 2.0f), radius * 0.9f,
+        portalRadius / 4.0f, radius + (portalRadius / 2.0f), radius * 0.9f,
+        portalRadius / 4.0f, radius, radius * 0.9f,
+        -portalRadius / 4.0f, radius, radius * 0.9f,
+        -portalRadius / 4.0f, radius - (portalRadius / 2.0f), radius * 0.9f,
+        portalRadius / 4.0f, radius - (portalRadius / 2.0f), radius * 0.9f,
+
+        // letter e
+        radius * 0.9f, radius + (portalRadius / 2.0f), portalRadius / 4.0f,
+        radius * 0.9f, radius + (portalRadius / 2.0f), -portalRadius / 4.0f,
+        radius * 0.9f, radius, portalRadius / 4.0f,
+        radius * 0.9f, radius, -portalRadius / 4.0f,
+        radius * 0.9f, radius - (portalRadius / 2.0f), portalRadius / 4.0f,
+        radius * 0.9f, radius - (portalRadius / 2.0f), -portalRadius / 4.0f,
+
+        // letter w
+        -radius * 0.9f, radius + (portalRadius / 2.0f), -portalRadius / 3.0f,
+        -radius * 0.9f, radius + (portalRadius / 2.0f), portalRadius / 3.0f,
+        -radius * 0.9f, radius, 0.0f,
+        -radius * 0.9f, radius - (portalRadius / 2.0f), -portalRadius / 6.0f,
+        -radius * 0.9f, radius - (portalRadius / 2.0f), portalRadius / 6.0f,
+
+        // letter f
+        portalRadius / 6.0f, 0.0f, -radius * 0.9f,
+        -portalRadius / 6.0f, 0.0f, -radius * 0.9f,
+        portalRadius / 6.0f, 0.0f, -radius * 0.8f,
+        -portalRadius / 6.0f, 0.0f, -radius * 0.8f,
+        -portalRadius / 6.0f, 0.0f, -radius * 0.7f,
+
+        // letter c
+        portalRadius / 6.0f, 2.0f * radius, -radius * 0.9f,
+        -portalRadius / 6.0f, 2.0f * radius, -radius * 0.9f,
+        portalRadius / 6.0f, 2.0f * radius, -radius * 0.7f,
+        -portalRadius / 6.0f, 2.0f * radius, -radius * 0.7f,
+    };
+    glVertexAttribPointer(programInfo.positionAttribLoc, 3, GL_FLOAT, GL_FALSE, 0, positions);
+    glEnableVertexAttribArray(programInfo.positionAttribLoc);
+
+    const int NUM_INDICES = 104;
+    uint16_t indices[NUM_INDICES] = {
+        0, 1, 1, 2, 2, 3, 3, 0,  // room
+        0, 4, 1, 5, 2, 6, 3, 7,
+        4, 5, 5, 6, 6, 7, 7, 4,
+        8, 9, 9, 10, 10, 11, 11, 8, // north portal
+        12, 13, 13, 14, 14, 15, 15, 12, // south portal
+        16, 17, 17, 18, 18, 19, 19, 16, // east portal
+        20, 21, 21, 22, 22, 23, 23, 20, // west door
+        24, 27, 27, 25, 25, 26,  // letter n
+        28, 29, 29, 30, 30, 31, 31, 32, 32, 33, // letter s
+        34, 35, 36, 37, 38, 39, 35, 37, 37, 39, // letter e
+        40, 43, 43, 42, 42, 44, 44, 41, // letter w
+        45, 46, 47, 48, 46, 48, 48, 49, // letter f
+        50, 51, 51, 53, 53, 52 // letter c
+    };
+    glDrawElements(GL_LINES, NUM_INDICES, GL_UNSIGNED_SHORT, indices);
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
@@ -895,7 +1243,12 @@ GLuint CreateDepthTexture(GLuint colorTexture)
     return depthTexture;
 }
 
-bool RenderLayer(Context& context, XrTime predictedDisplayTime,
+
+bool RenderLayer(XrInstance instance, XrSession session, std::vector<XrViewConfigurationView>& viewConfigs,
+                 XrSpace stageSpace, std::vector<Context::SwapchainInfo>& swapchains,
+                 std::vector<std::vector<XrSwapchainImageOpenGLKHR>>& swapchainImages,
+                 std::map<GLuint, GLuint>& colorToDepthMap, GLuint frameBuffer,
+                 const Context::ProgramInfo& programInfo, XrTime predictedDisplayTime,
                  std::vector<XrCompositionLayerProjectionView>& projectionLayerViews,
                  XrCompositionLayerProjection& layer)
 {
@@ -903,11 +1256,11 @@ bool RenderLayer(Context& context, XrTime predictedDisplayTime,
     viewState.type = XR_TYPE_VIEW_STATE;
     viewState.next = NULL;
 
-    uint32_t viewCapacityInput = (uint32_t)context.viewConfigs.size();
+    uint32_t viewCapacityInput = (uint32_t)viewConfigs.size();
     uint32_t viewCountOutput;
 
-    std::vector<XrView> views(context.viewConfigs.size());
-    for (size_t i = 0; i < context.viewConfigs.size(); i++)
+    std::vector<XrView> views(viewConfigs.size());
+    for (size_t i = 0; i < viewConfigs.size(); i++)
     {
         views[i].type = XR_TYPE_VIEW;
         views[i].next = NULL;
@@ -917,9 +1270,9 @@ bool RenderLayer(Context& context, XrTime predictedDisplayTime,
     vli.type = XR_TYPE_VIEW_LOCATE_INFO;
     vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
     vli.displayTime = predictedDisplayTime;
-    vli.space = context.stageSpace;
-    XrResult result = xrLocateViews(context.session, &vli, &viewState, viewCapacityInput, &viewCountOutput, views.data());
-    if (!CheckResult(context.instance, result, "xrLocateViews"))
+    vli.space = stageSpace;
+    XrResult result = xrLocateViews(session, &vli, &viewState, viewCapacityInput, &viewCountOutput, views.data());
+    if (!CheckResult(instance, result, "xrLocateViews"))
     {
         return false;
     }
@@ -927,8 +1280,8 @@ bool RenderLayer(Context& context, XrTime predictedDisplayTime,
     if (XR_UNQUALIFIED_SUCCESS(result))
     {
         assert(viewCountOutput == viewCapacityInput);
-        assert(viewCountOutput == context.viewConfigs.size());
-        assert(viewCountOutput == context.swapchains.size());
+        assert(viewCountOutput == viewConfigs.size());
+        assert(viewCountOutput == swapchains.size());
 
         projectionLayerViews.resize(viewCountOutput);
 
@@ -936,7 +1289,7 @@ bool RenderLayer(Context& context, XrTime predictedDisplayTime,
         for (uint32_t i = 0; i < viewCountOutput; i++)
         {
             // Each view has a separate swapchain which is acquired, rendered to, and released.
-            const Context::SwapchainInfo viewSwapchain = context.swapchains[i];
+            const Context::SwapchainInfo viewSwapchain = swapchains[i];
 
             XrSwapchainImageAcquireInfo ai;
             ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
@@ -944,7 +1297,7 @@ bool RenderLayer(Context& context, XrTime predictedDisplayTime,
 
             uint32_t swapchainImageIndex;
             result = xrAcquireSwapchainImage(viewSwapchain.handle, &ai, &swapchainImageIndex);
-            if (!CheckResult(context.instance, result, "xrAquireSwapchainImage"))
+            if (!CheckResult(instance, result, "xrAquireSwapchainImage"))
             {
                 return false;
             }
@@ -954,7 +1307,7 @@ bool RenderLayer(Context& context, XrTime predictedDisplayTime,
             wi.next = NULL;
             wi.timeout = XR_INFINITE_DURATION;
             result = xrWaitSwapchainImage(viewSwapchain.handle, &wi);
-            if (!CheckResult(context.instance, result, "xrWaitSwapchainImage"))
+            if (!CheckResult(instance, result, "xrWaitSwapchainImage"))
             {
                 return false;
             }
@@ -966,29 +1319,29 @@ bool RenderLayer(Context& context, XrTime predictedDisplayTime,
             projectionLayerViews[i].subImage.imageRect.offset = {0, 0};
             projectionLayerViews[i].subImage.imageRect.extent = {viewSwapchain.width, viewSwapchain.height};
 
-            const XrSwapchainImageOpenGLKHR& swapchainImage = context.swapchainImages[i][swapchainImageIndex];
+            const XrSwapchainImageOpenGLKHR& swapchainImage = swapchainImages[i][swapchainImageIndex];
 
             // find or create the depthTexture associated with this colorTexture
             const uint32_t colorTexture = swapchainImage.image;
-            auto iter = context.colorToDepthMap.find(colorTexture);
-            if (iter == context.colorToDepthMap.end())
+            auto iter = colorToDepthMap.find(colorTexture);
+            if (iter == colorToDepthMap.end())
             {
                 const uint32_t depthTexture = CreateDepthTexture(colorTexture);
-                iter = context.colorToDepthMap.insert(std::make_pair(colorTexture, depthTexture)).first;
+                iter = colorToDepthMap.insert(std::make_pair(colorTexture, depthTexture)).first;
             }
 
-            RenderView(projectionLayerViews[i], context.frameBuffer, iter->first, iter->second);
+            RenderView(programInfo, projectionLayerViews[i], frameBuffer, iter->first, iter->second);
 
             XrSwapchainImageReleaseInfo ri;
             ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
             ri.next = NULL;
             result = xrReleaseSwapchainImage(viewSwapchain.handle, &ri);
-            if (!CheckResult(context.instance, result, "xrReleaseSwapchainImage"))
+            if (!CheckResult(instance, result, "xrReleaseSwapchainImage"))
             {
                 return false;
             }
 
-            layer.space = context.stageSpace;
+            layer.space = stageSpace;
             layer.viewCount = (uint32_t)projectionLayerViews.size();
             layer.views = projectionLayerViews.data();
         }
@@ -997,7 +1350,11 @@ bool RenderLayer(Context& context, XrTime predictedDisplayTime,
     return true;
 }
 
-bool RenderFrame(Context& context)
+bool RenderFrame(XrInstance instance, XrSession session, std::vector<XrViewConfigurationView>& viewConfigs,
+                 XrSpace stageSpace, std::vector<Context::SwapchainInfo>& swapchains,
+                 std::vector<std::vector<XrSwapchainImageOpenGLKHR>>& swapchainImages,
+                 std::map<GLuint, GLuint>& colorToDepthMap, GLuint frameBuffer,
+                 const Context::ProgramInfo& programInfo)
 {
     XrFrameState fs;
     fs.type = XR_TYPE_FRAME_STATE;
@@ -1007,24 +1364,20 @@ bool RenderFrame(Context& context)
     fwi.type = XR_TYPE_FRAME_WAIT_INFO;
     fwi.next = NULL;
 
-    XrResult result = xrWaitFrame(context.session, &fwi, &fs);
-    if (!CheckResult(context.instance, result, "xrWaitFrame"))
+    XrResult result = xrWaitFrame(session, &fwi, &fs);
+    if (!CheckResult(instance, result, "xrWaitFrame"))
     {
         return false;
     }
-
-    printf("after xrWaitFrame\n");
 
     XrFrameBeginInfo fbi;
     fbi.type = XR_TYPE_FRAME_BEGIN_INFO;
     fbi.next = NULL;
-    result = xrBeginFrame(context.session, &fbi);
-    if (!CheckResult(context.instance, result, "xrBeginFrame"))
+    result = xrBeginFrame(session, &fbi);
+    if (!CheckResult(instance, result, "xrBeginFrame"))
     {
         return false;
     }
-
-    printf("after xrBeginFrame\n");
 
     std::vector<XrCompositionLayerBaseHeader*> layers;
     XrCompositionLayerProjection layer;
@@ -1034,7 +1387,8 @@ bool RenderFrame(Context& context)
     std::vector<XrCompositionLayerProjectionView> projectionLayerViews;
     if (fs.shouldRender == XR_TRUE)
     {
-        if (RenderLayer(context, fs.predictedDisplayTime, projectionLayerViews, layer))
+        if (RenderLayer(instance, session, viewConfigs, stageSpace, swapchains, swapchainImages, colorToDepthMap,
+                        frameBuffer, programInfo, fs.predictedDisplayTime, projectionLayerViews, layer))
         {
             layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer));
         }
@@ -1047,8 +1401,8 @@ bool RenderFrame(Context& context)
     fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     fei.layerCount = (uint32_t)layers.size();
     fei.layers = layers.data();
-    result = xrEndFrame(context.session, &fei);
-    if (!CheckResult(context.instance, result, "xrEndFrame"))
+    result = xrEndFrame(session, &fei);
+    if (!CheckResult(instance, result, "xrEndFrame"))
     {
         return false;
     }
@@ -1140,6 +1494,11 @@ int main(int argc, char *argv[])
     }
 
     if (!CreateFrameBuffer(context.frameBuffer))
+    {
+        return 1;
+    }
+
+    if (!CompileProgram(context.programInfo))
     {
         return 1;
     }
@@ -1249,16 +1608,14 @@ int main(int argc, char *argv[])
 
         if (sessionReady)
         {
-            static int frameNumber = 0;
-            printf("frame = %d\n", frameNumber);
-            frameNumber++;
-
-            if (!SyncInput(context))
+            if (!SyncInput(context.instance, context.session, context.actionSet))
             {
                 return 1;
             }
 
-            if (!RenderFrame(context))
+            if (!RenderFrame(context.instance, context.session, context.viewConfigs,
+                             context.stageSpace, context.swapchains, context.swapchainImages,
+                             context.colorToDepthMap, context.frameBuffer, context.programInfo))
             {
                 return 1;
             }
