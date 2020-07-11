@@ -22,7 +22,6 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_opengl.h>
 
-#include <stdlib.h> //rand()
 #include <cassert>
 
 static bool quitting = false;
@@ -65,16 +64,6 @@ struct Context
     };
     ProgramInfo programInfo;
 };
-
-void render()
-{
-    r = static_cast <float> (rand()) / static_cast <float> (RAND_MAX);
-
-    glClearColor(r, 0.4f, 0.1f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    SDL_GL_SwapWindow(window);
-}
 
 int SDLCALL watch(void *userdata, SDL_Event* event)
 {
@@ -1624,9 +1613,6 @@ int main(int argc, char *argv[])
         {
             SDL_Delay(100);
         }
-
-        //render();
-        //SDL_Delay(2);
     }
 
     SDL_DelEventWatch(watch, NULL);
